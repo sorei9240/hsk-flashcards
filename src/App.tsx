@@ -1,0 +1,20 @@
+import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import HomePage from './components/HomePage';
+import FlashcardSession from './components/FlashcardSession';
+import HelpFAQ from './components/HelpFAQ';
+
+function App() {
+  return (
+    <Router>
+      <div className="App min-h-screen bg-gray-100">
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/study" element={<FlashcardSession />} />
+          <Route path="/help" element={<HelpFAQ />} />
+        </Routes>
+      </div>
+    </Router>
+  );
+}
+
+export default App;
