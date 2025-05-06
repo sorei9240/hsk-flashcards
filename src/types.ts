@@ -30,13 +30,6 @@ export interface UserPreferences {
   studyMode: 'ChineseToEnglish' | 'EnglishToChinese';
 }
 
-export interface CardProgress {
-  characterId: string; // simplified character as ID
-  correctCount: number;
-  incorrectCount: number;
-  lastReviewed: number; // timestamp
-}
-
 export interface SessionStats {
   totalReviewed: number;
   correctCount: number;
