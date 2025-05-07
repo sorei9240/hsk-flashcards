@@ -1,4 +1,4 @@
-# HSK Flashcards App
+# ZiXue HSK Flashcards App
 
 A web application for studying Chinese HSK vocabulary using flashcards. This application is designed to help language learners memorize Chinese characters based on the HSK curriculum.
 
