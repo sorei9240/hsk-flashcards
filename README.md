@@ -6,7 +6,7 @@ A web application for studying Chinese HSK vocabulary using flashcards. This app
 
 - **HSK Level Selection**: Choose which HSK level you want to study (1-6)
 - **Character Set Toggle**: Switch between Simplified and Traditional characters
-- **Interactive Flashcards**: Flip cards to reveal translations and grade your knowledge
+- **Interactive Flashcards**: Flip cards to reveal translations
 - **Study Mode Selection**: Choose between Chinese to English and English to Chinese study modes for practice with both recall and production.
 - **Responsive Design**: Works on desktop and mobile devices
 
