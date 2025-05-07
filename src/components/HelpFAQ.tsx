@@ -35,8 +35,8 @@ const HelpFAQ: React.FC = () => {
       question: "How does this app help me learn Chinese?",
       answer: (
         <div>
-          <p>This app uses a simple Spaced Repetition Algorithm (SRS) to help you learn new characters, and review old ones right before you are likely to forget them, improving long-term retention.</p>
-          <p className="mt-2">By focusing on the HSK vocabulary lists, you're learning the most commonly used characters needed for Chinese language proficiency tests, which is an efficient way to build your vocabulary.</p>
+          <p>This app provides you with flashcards organized into decks which align with the the levels of the HSK standardized test of Chinese language proficiency.</p>
+          <p className="mt-2">By focusing on the HSK vocabulary lists, you're learning the some of the most commonly used characters and vocabulary, which is an efficient way to learn Chinese.</p>
         </div>
       )
     },
