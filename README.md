@@ -19,7 +19,7 @@ A web application for studying Chinese HSK vocabulary using flashcards. This app
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/hsk-flashcards.git
+   git clone https://github.com/sorei9240/hsk-flashcards.git
    cd hsk-flashcards
    ```
 
