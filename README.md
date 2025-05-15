@@ -2,6 +2,9 @@
 
 A web application for studying Chinese HSK vocabulary using flashcards. This application is designed to help language learners memorize Chinese characters based on the HSK curriculum.
 
+## Link to Hosted Site:
+https://zi-xue-hsk.netlify.app/
+
 ## Features
 
 - **HSK Level Selection**: Choose which HSK level you want to study (1-6)
