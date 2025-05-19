@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import HomePage from './components/HomePage';
 import FlashcardSession from './components/FlashcardSession';
 import HelpFAQ from './components/HelpFAQ';
+import VocabularyList from './components/VocabularyList';
 
 function App() {
   return (
@@ -11,6 +12,7 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/study" element={<FlashcardSession />} />
           <Route path="/help" element={<HelpFAQ />} />
+          <Route path="/vocabulary" element={<VocabularyList />} />
         </Routes>
       </div>
     </Router>

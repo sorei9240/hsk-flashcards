@@ -21,6 +21,11 @@ const HomePage: React.FC = () => {
     navigate('/study');
   };
 
+  const handleViewVocabulary = () => {
+    savePreferences(level, characterSet, 'ChineseToEnglish');
+    navigate('/vocabulary');
+  };
+
   const handleViewHelp = () => {
     navigate('/help');
   };
@@ -74,14 +79,23 @@ const HomePage: React.FC = () => {
           </div>
         </div>
         
-        <button
-          onClick={handleStartSession}
-          className="w-full bg-blue-700 hover:bg-blue-500 text-white font-medium py-3 px-4 rounded-md shadow-sm transition-colors duration-200 mb-6 flex items-center justify-center"
-        >
-          <span className="text-xl">Start Study Session</span>
-        </button>
+        <div className="space-y-4">
+          <button
+            onClick={handleStartSession}
+            className="w-full bg-blue-700 hover:bg-blue-500 text-white font-medium py-3 px-4 rounded-md shadow-sm transition-colors duration-200 flex items-center justify-center"
+          >
+            <span className="text-xl">Start Study Session</span>
+          </button>
+          
+          <button
+            onClick={handleViewVocabulary}
+            className="w-full bg-blue-600 hover:bg-blue-400 text-white font-medium py-3 px-4 rounded-md shadow-sm transition-colors duration-200 flex items-center justify-center"
+          >
+            <span className="text-xl">View Vocabulary List</span>
+          </button>
+        </div>
         
-        <div className="flex justify-center">
+        <div className="flex justify-center mt-6">
           <button
             onClick={handleViewHelp}
             className="flex items-center justify-center bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-md transition-colors duration-200"
