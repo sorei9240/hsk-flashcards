@@ -15,6 +15,11 @@ import {
   getCardProgress,
   type CardProgress 
 } from '../services/reviewService';
+import { 
+  checkAudioServiceHealth,
+  preloadAudio,
+  extractChineseText 
+} from '../services/audioService';
 
 interface SessionStats {
   totalCards: number;
@@ -35,6 +40,8 @@ const FlashcardSession: React.FC = () => {
   const [history, setHistory] = useState<number[]>([]);
   const [showModeSelector, setShowModeSelector] = useState<boolean>(false);
   const [reviewServiceConnected, setReviewServiceConnected] = useState<boolean>(false);
+  const [audioServiceConnected, setAudioServiceConnected] = useState<boolean>(false);
+  const [preloadEnabled, setPreloadEnabled] = useState<boolean>(true);
   const [sessionStats, setSessionStats] = useState<SessionStats>({
     totalCards: 0,
     cardsReviewed: 0,
@@ -60,6 +67,20 @@ const FlashcardSession: React.FC = () => {
     checkConnection();
   }, []);
   
+  // Check audio service connection
+  useEffect(() => {
+    const checkAudioConnection = async () => {
+      const isHealthy = await checkAudioServiceHealth();
+      setAudioServiceConnected(isHealthy);
+      
+      if (!isHealthy) {
+        console.warn('Audio service is not available. Pronunciation features will be disabled.');
+      }
+    };
+    
+    checkAudioConnection();
+  }, []);
+  
   // Load character data AND previously graded cards
   useEffect(() => {
     const loadData = async () => {
@@ -72,7 +93,6 @@ const FlashcardSession: React.FC = () => {
       const filteredCharacters = filterByLevel(allCharacters, prefs.level);
       const shuffled = [...filteredCharacters].sort(() => 0.5 - Math.random());
       
-      // Use the card count from preferences, default to 20
       const cardCount = prefs.cardCount || 20;
       const sessionCards = shuffled.slice(0, Math.min(cardCount, filteredCharacters.length));
       
@@ -91,13 +111,11 @@ const FlashcardSession: React.FC = () => {
             const cardId = generateCardId(char, prefs.characterSet);
             try {
               const progress = await getCardProgress(cardId);
-              // If the card has been reviewed before, mark it as graded
               if (progress.totalReviews > 0) {
                 const isCorrect = progress.correctReviews > (progress.totalReviews / 2);
                 previouslyGradedMap.set(cardId, isCorrect);
               }
             } catch (error) {
-              // Card not found in microservice data, it's new
               console.log(`No previous data for card ${cardId}`);
             }
           }
@@ -109,22 +127,67 @@ const FlashcardSession: React.FC = () => {
         }
       }
       
+      // Initial audio preload for first 5 cards 
+      if (audioServiceConnected && preloadEnabled && sessionCards.length > 1) {
+        try {
+          const textsToPreload = sessionCards.slice(0, 5).map(char => {
+            return extractChineseText(char, prefs.characterSet) || char.simplified;
+          }).filter(Boolean);
+          
+          if (textsToPreload.length > 0) {
+            console.log('Preloading audio for upcoming cards...');
+            preloadAudio(textsToPreload).catch(error => {
+              console.error('Initial preload failed:', error);
+            });
+          }
+        } catch (error) {
+          console.error('Error setting up initial preload:', error);
+        }
+      }
+      
       setLoading(false);
     };
     
     loadData();
-  }, [reviewServiceConnected]); // Also reload when service connection changes
+  }, [reviewServiceConnected, audioServiceConnected]);
   
-  // Handle card grading (integration with Microservice B)
-  const handleCardGraded = (cardId: string, isCorrect: boolean, progress: CardProgress, isFirstGrading = true) => {
-    // Update graded cards map
+  // Preload audio for next cards when advancing
+  useEffect(() => {
+    if (audioServiceConnected && preloadEnabled && characters.length > 0) {
+      const preloadNextCards = async () => {
+        const startIndex = currentIndex + 1;
+        const endIndex = Math.min(startIndex + 3, characters.length);
+        const nextCards = characters.slice(startIndex, endIndex);
+        
+        if (nextCards.length > 0) {
+          try {
+            const textsToPreload = nextCards.map(char => {
+              return extractChineseText(char, characterSet) || char.simplified;
+            }).filter(Boolean);
+            
+            if (textsToPreload.length > 0) {
+              preloadAudio(textsToPreload).catch(error => {
+                console.error('Background preload failed:', error);
+              });
+            }
+          } catch (error) {
+            console.error('Error setting up audio preload:', error);
+          }
+        }
+      };
+      
+      preloadNextCards();
+    }
+  }, [currentIndex, audioServiceConnected, preloadEnabled, characters, characterSet]);
+  
+  // Handle card grading 
+  const handleCardGraded = (cardId: string, isCorrect: boolean, progress: CardProgress) => {
     const wasGradedBefore = gradedCards.has(cardId);
     const previousResult = gradedCards.get(cardId);
     
     setGradedCards(prev => new Map(prev.set(cardId, isCorrect)));
     
     if (!wasGradedBefore) {
-      // First time grading this card, increment cards reviewed
       setSessionStats(prev => ({
         ...prev,
         cardsReviewed: prev.cardsReviewed + 1,
@@ -132,7 +195,6 @@ const FlashcardSession: React.FC = () => {
         incorrectCount: prev.incorrectCount + (!isCorrect ? 1 : 0)
       }));
     } else if (previousResult !== isCorrect) {
-      // Correction, adjust correct/incorrect counts without changing cardsReviewed
       setSessionStats(prev => ({
         ...prev,
         correctCount: prev.correctCount + (isCorrect ? 1 : -1),
@@ -230,7 +292,6 @@ const FlashcardSession: React.FC = () => {
         }
       };
     } else {
-      // English to Chinese mode (reversed)
       return {
         front: content.back.meanings[0], 
         back: {
@@ -242,28 +303,40 @@ const FlashcardSession: React.FC = () => {
     }
   })();
   
-  // Check if we're on the last card
   const isLastCard = currentIndex === characters.length - 1;
   
   return (
     <div className="min-h-screen bg-background p-4">
       <div className="max-w-lg mx-auto bg-white rounded-lg shadow-lg p-6 my-8">
-        {/* Review service status indicator */}
-        {!reviewServiceConnected && (
-          <div className="mb-4 p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-md text-sm">
-            ⚠️ Review service unavailable. Progress tracking is limited.
-          </div>
-        )}
+        {/* Service status indicators */}
+        <div className="mb-4 space-y-2">
+          {!reviewServiceConnected && (
+            <div className="p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-md text-sm">
+              ⚠️ Review service unavailable. Progress tracking is limited.
+            </div>
+          )}
+          
+          {!audioServiceConnected && (
+            <div className="p-3 bg-orange-100 border border-orange-400 text-orange-700 rounded-md text-sm">
+              🔊 Audio service unavailable. Pronunciation features are disabled.
+            </div>
+          )}
+          
+          {audioServiceConnected && preloadEnabled && (
+            <div className="p-2 bg-blue-50 border border-blue-200 text-blue-700 rounded-md text-xs">
+              🎵 Audio preloading enabled for smooth playback
+            </div>
+          )}
+        </div>
         
-        {/* Study mode selector */}
+        {/* Study mode selector modal */}
         {showModeSelector && (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
             <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full relative z-50">
               <h3 className="text-xl font-bold mb-4">Which way would you like to study?</h3>
               <div className="space-y-3">
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  onClick={() => {
                     setStudyMode('ChineseToEnglish');
                     setShowModeSelector(false);
                   }}
@@ -274,8 +347,7 @@ const FlashcardSession: React.FC = () => {
                   Chinese → English
                 </button>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  onClick={() => {
                     setStudyMode('EnglishToChinese');
                     setShowModeSelector(false);
                   }}
@@ -290,11 +362,11 @@ const FlashcardSession: React.FC = () => {
             <div 
               className="fixed inset-0 bg-black opacity-50"
               onClick={() => setShowModeSelector(false)}
-            ></div>
+            />
           </div>
         )}
         
-        {/* Mode switch button */}
+        {/* Top controls and stats */}
         <div className="mb-4 flex justify-between items-center">
           <button 
             onClick={() => setShowModeSelector(true)}
@@ -304,21 +376,35 @@ const FlashcardSession: React.FC = () => {
             Switch to {studyMode === 'ChineseToEnglish' ? 'English → Chinese' : 'Chinese → English'} Mode
           </button>
           
-          {/* Session stats */}
-          {reviewServiceConnected && sessionStats.cardsReviewed > 0 && (
-            <div className="text-xs text-gray-600">
-              Reviewed: {sessionStats.cardsReviewed} | 
-              Correct: {sessionStats.correctCount} | 
-              Accuracy: {Math.round((sessionStats.correctCount / sessionStats.cardsReviewed) * 100)}%
-            </div>
-          )}
+          <div className="flex items-center space-x-2">
+            {/* Audio preload toggle */}
+            {audioServiceConnected && (
+              <button
+                onClick={() => setPreloadEnabled(!preloadEnabled)}
+                className={`text-xs px-2 py-1 rounded-md transition-colors ${
+                  preloadEnabled 
+                    ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' 
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+                title="Toggle audio preloading"
+              >
+                🎵 {preloadEnabled ? 'ON' : 'OFF'}
+              </button>
+            )}
+            
+            {/* Session stats */}
+            {reviewServiceConnected && sessionStats.cardsReviewed > 0 && (
+              <div className="text-xs text-gray-600">
+                {sessionStats.cardsReviewed}/{sessionStats.totalCards} | {Math.round((sessionStats.correctCount / sessionStats.cardsReviewed) * 100)}%
+              </div>
+            )}
+          </div>
         </div>
         
-        {/* Progress bar */}
+        {/* Progress indicator */}
         <div className="mb-4 flex justify-between items-center text-sm text-gray-600">
           <span>Card {currentIndex + 1} of {characters.length}</span>
           
-          {/* Finish button*/}
           {isLastCard && (
             <button
               onClick={() => setShowSummary(true)}
@@ -329,7 +415,7 @@ const FlashcardSession: React.FC = () => {
           )}
         </div>
         
-        {/* Flashcard */}
+        {/* Main flashcard component with audio integration */}
         <Flashcard
           cardId={cardId}
           front={cardContent.front}
@@ -339,9 +425,11 @@ const FlashcardSession: React.FC = () => {
           onNext={!isLastCard ? handleNext : undefined}
           onCardGraded={reviewServiceConnected ? handleCardGraded : undefined}
           initialGradingState={gradedCards.get(cardId)}
+          characterSet={characterSet}
+          currentCharacter={currentChar}
         />
         
-        {/* Finish button*/}
+        {/* Complete session button for last card */}
         {isLastCard && (
           <div className="mt-6 flex justify-center">
             <button
@@ -355,6 +443,6 @@ const FlashcardSession: React.FC = () => {
       </div>
     </div>
   );
-}
+};
 
 export default FlashcardSession;

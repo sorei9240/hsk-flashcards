@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { gradeCard, resetCardProgress, type CardProgress } from '../services/reviewService';
+import { getAudioUrl, playAudioUrl, checkAudioServiceHealth, extractChineseText } from '../services/audioService';
 
 interface FlashcardProps {
   cardId: string;
@@ -14,6 +15,8 @@ interface FlashcardProps {
   onNext?: () => void;
   onCardGraded?: (cardId: string, isCorrect: boolean, progress: CardProgress) => void;
   initialGradingState?: boolean; // undefined = not graded, true = correct, false = incorrect
+  characterSet?: 'simplified' | 'traditional'; // Add character set for audio
+  currentCharacter?: any; // Add character object for audio extraction
 }
 
 const Flashcard: React.FC<FlashcardProps> = ({
@@ -25,6 +28,8 @@ const Flashcard: React.FC<FlashcardProps> = ({
   onNext,
   onCardGraded,
   initialGradingState,
+  characterSet = 'simplified',
+  currentCharacter,
 }) => {
   const [isFlipped, setIsFlipped] = useState(false);
   const [isConfirmingExit, setIsConfirmingExit] = useState(false);
@@ -35,18 +40,84 @@ const Flashcard: React.FC<FlashcardProps> = ({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [gradingError, setGradingError] = useState<string | null>(null);
   
+  // Audio service integration (Microservice C)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [audioServiceConnected, setAudioServiceConnected] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  
+  // Check audio service health on component mount
+  useEffect(() => {
+    const checkAudioHealth = async () => {
+      const isHealthy = await checkAudioServiceHealth();
+      setAudioServiceConnected(isHealthy);
+      
+      if (!isHealthy) {
+        console.warn('Audio service is not available. Audio features will be limited.');
+      }
+    };
+    
+    checkAudioHealth();
+  }, []);
+  
+  // Load audio when card changes (User Story 1: Pronunciation Examples)
+  useEffect(() => {
+    if (audioServiceConnected && front) {
+      loadAudio(front);
+    }
+  }, [front, audioServiceConnected]);
+  
   // Update state when initialGradingState changes (when navigating between cards)
   React.useEffect(() => {
     setHasBeenGraded(initialGradingState !== undefined);
     setLastGradingResult(initialGradingState ?? null);
   }, [initialGradingState]);
 
+  // Load audio for the current card
+  const loadAudio = async (text: string) => {
+    if (!audioServiceConnected) return;
+    
+    setAudioLoading(true);
+    setAudioError(null);
+    
+    try {
+      // Extract Chinese text for audio
+      const chineseText = extractChineseText(currentCharacter || { character: text }, characterSet) || text;
+      
+      const response = await getAudioUrl(chineseText);
+      setAudioUrl(response.audioUrl);
+      
+      console.log(`Audio loaded for "${chineseText}" (cached: ${response.cached})`);
+    } catch (error) {
+      console.error('Failed to load audio:', error);
+      setAudioError('Failed to load audio');
+    } finally {
+      setAudioLoading(false);
+    }
+  };
+
+  // Play audio pronunciation 
+  const handlePlayAudio = async () => {
+    if (!audioUrl || isPlayingAudio) return;
+    
+    setIsPlayingAudio(true);
+    setAudioError(null);
+    
+    try {
+      await playAudioUrl(audioUrl);
+    } catch (error) {
+      console.error('Error playing audio:', error);
+      setAudioError('Failed to play audio');
+    } finally {
+      setIsPlayingAudio(false);
+    }
+  };
+
   const handleFlip = () => {
     if (!showGrading) {
       setIsFlipped(!isFlipped);
       if (!isFlipped) {
-        // When flipping to back, always show grading interface
-        // The logic inside will determine whether to show initial grading or correction options
         setShowGrading(true);
       }
     }
@@ -75,7 +146,7 @@ const Flashcard: React.FC<FlashcardProps> = ({
     };
   };
 
-  // Grade the card (Microservice B integration)
+  // Grade the card 
   const handleGrade = async (isCorrect: boolean) => {
     // Prevent grading while request is in progress
     if (isGrading) {
@@ -119,7 +190,7 @@ const Flashcard: React.FC<FlashcardProps> = ({
     }
   };
 
-  // Reset card progress (Microservice B integration)
+  // Reset card progress
   const handleReset = async () => {
     try {
       const response = await resetCardProgress(cardId);
@@ -138,6 +209,13 @@ const Flashcard: React.FC<FlashcardProps> = ({
 
   return (
     <div className="relative w-full max-w-md mx-auto">
+      {/* Audio service status indicator */}
+      {!audioServiceConnected && (
+        <div className="mb-4 p-2 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-md text-xs">
+          ⚠️ Audio service unavailable. Pronunciation features are disabled.
+        </div>
+      )}
+
       {/* Exit confirmation dialog */}
       {isConfirmingExit && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
@@ -199,15 +277,24 @@ const Flashcard: React.FC<FlashcardProps> = ({
           <span>End Session</span>
         </button>
         
-        <button
-          onClick={() => setShowResetConfirm(true)}
-          className="text-orange-600 hover:text-orange-800 flex items-center text-sm"
-          title="Reset card progress"
-        >
-          <span className="mr-1">↻</span>
-          <span>Reset</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            className="text-orange-600 hover:text-orange-800 flex items-center text-sm"
+            title="Reset card progress"
+          >
+            <span className="mr-1">↻</span>
+            <span>Reset</span>
+          </button>
+        </div>
       </div>
+
+      {/* Audio error display */}
+      {audioError && (
+        <div className="mb-4 p-2 bg-red-100 border border-red-400 text-red-700 rounded-md text-sm">
+          {audioError}
+        </div>
+      )}
 
       {/* Card display */}
       <div 
@@ -232,6 +319,24 @@ const Flashcard: React.FC<FlashcardProps> = ({
             <p className="text-lg text-gray-800 mb-4 break-words px-2">
               {back.pinyin}
             </p>
+            
+            {/* Audio button under pinyin */}
+            {audioServiceConnected && (
+              <div className="flex justify-center mb-4">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePlayAudio();
+                  }}
+                  disabled={audioLoading || isPlayingAudio || !audioUrl}
+                  className="w-10 h-10 bg-blue-200 hover:bg-blue-300 text-white rounded-lg disabled:bg-gray-300 transition-colors duration-200 flex items-center justify-center"
+                  title="Play pronunciation"
+                >
+                  {audioLoading ? '⏳' : isPlayingAudio ? '🔊' : '🔊'}
+                </button>
+              </div>
+            )}
+            
             <div className="px-2">
               {back.meanings.map((meaning, index) => (
                 <p key={index} className="text-md mb-1 text-gray-800 break-words">
