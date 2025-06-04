@@ -9,6 +9,20 @@ import {
   getCardContent, 
   loadPreferences
 } from '../services/dataService';
+import { 
+  checkReviewServiceHealth, 
+  generateCardId,
+  getCardProgress,
+  type CardProgress 
+} from '../services/reviewService';
+
+interface SessionStats {
+  totalCards: number;
+  cardsReviewed: number;
+  correctCount: number;
+  incorrectCount: number;
+  averageResponseTime: number;
+}
 
 const FlashcardSession: React.FC = () => {
   const navigate = useNavigate();
@@ -18,10 +32,35 @@ const FlashcardSession: React.FC = () => {
   const [showSummary, setShowSummary] = useState<boolean>(false);
   const [studyMode, setStudyMode] = useState<'ChineseToEnglish' | 'EnglishToChinese'>('ChineseToEnglish');
   const [characterSet, setCharacterSet] = useState<CharacterSet>('simplified');
-  const [history, setHistory] = useState<number[]>([]); // For backtracking (IH#5)
+  const [history, setHistory] = useState<number[]>([]);
   const [showModeSelector, setShowModeSelector] = useState<boolean>(false);
+  const [reviewServiceConnected, setReviewServiceConnected] = useState<boolean>(false);
+  const [sessionStats, setSessionStats] = useState<SessionStats>({
+    totalCards: 0,
+    cardsReviewed: 0,
+    correctCount: 0,
+    incorrectCount: 0,
+    averageResponseTime: 0
+  });
   
-  // get character data
+  // Track graded cards at session level
+  const [gradedCards, setGradedCards] = useState<Map<string, boolean>>(new Map());
+  
+  // Check review service connection
+  useEffect(() => {
+    const checkConnection = async () => {
+      const isHealthy = await checkReviewServiceHealth();
+      setReviewServiceConnected(isHealthy);
+      
+      if (!isHealthy) {
+        console.warn('Review service is not available. Grading features will be limited.');
+      }
+    };
+    
+    checkConnection();
+  }, []);
+  
+  // Load character data AND previously graded cards
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
@@ -31,19 +70,79 @@ const FlashcardSession: React.FC = () => {
       
       const allCharacters = await loadCharacterData();
       const filteredCharacters = filterByLevel(allCharacters, prefs.level);
-      
-      // Shuffle the cards
       const shuffled = [...filteredCharacters].sort(() => 0.5 - Math.random());
       
-      // Limit to 20 cards for now
-      const sessionCards = shuffled.slice(0, 20);
+      // Use the card count from preferences, default to 20
+      const cardCount = prefs.cardCount || 20;
+      const sessionCards = shuffled.slice(0, Math.min(cardCount, filteredCharacters.length));
       
       setCharacters(sessionCards);
+      setSessionStats(prev => ({
+        ...prev,
+        totalCards: sessionCards.length
+      }));
+      
+      // Load previously graded cards from microservice
+      if (reviewServiceConnected) {
+        try {
+          const previouslyGradedMap = new Map<string, boolean>();
+          
+          for (const char of sessionCards) {
+            const cardId = generateCardId(char, prefs.characterSet);
+            try {
+              const progress = await getCardProgress(cardId);
+              // If the card has been reviewed before, mark it as graded
+              if (progress.totalReviews > 0) {
+                const isCorrect = progress.correctReviews > (progress.totalReviews / 2);
+                previouslyGradedMap.set(cardId, isCorrect);
+              }
+            } catch (error) {
+              // Card not found in microservice data, it's new
+              console.log(`No previous data for card ${cardId}`);
+            }
+          }
+          
+          setGradedCards(previouslyGradedMap);
+          console.log(`Loaded ${previouslyGradedMap.size} previously graded cards`);
+        } catch (error) {
+          console.error('Error loading previous grades:', error);
+        }
+      }
+      
       setLoading(false);
     };
     
     loadData();
-  }, []);
+  }, [reviewServiceConnected]); // Also reload when service connection changes
+  
+  // Handle card grading (integration with Microservice B)
+  const handleCardGraded = (cardId: string, isCorrect: boolean, progress: CardProgress, isFirstGrading = true) => {
+    // Update graded cards map
+    const wasGradedBefore = gradedCards.has(cardId);
+    const previousResult = gradedCards.get(cardId);
+    
+    setGradedCards(prev => new Map(prev.set(cardId, isCorrect)));
+    
+    if (!wasGradedBefore) {
+      // First time grading this card, increment cards reviewed
+      setSessionStats(prev => ({
+        ...prev,
+        cardsReviewed: prev.cardsReviewed + 1,
+        correctCount: prev.correctCount + (isCorrect ? 1 : 0),
+        incorrectCount: prev.incorrectCount + (!isCorrect ? 1 : 0)
+      }));
+    } else if (previousResult !== isCorrect) {
+      // Correction, adjust correct/incorrect counts without changing cardsReviewed
+      setSessionStats(prev => ({
+        ...prev,
+        correctCount: prev.correctCount + (isCorrect ? 1 : -1),
+        incorrectCount: prev.incorrectCount + (isCorrect ? -1 : 1)
+      }));
+    }
+    
+    console.log(`Card ${cardId} graded as ${isCorrect ? 'correct' : 'incorrect'}`);
+    console.log(`New streak: ${progress.streak}, Next review: ${progress.nextReviewDate}`);
+  };
   
   // Handle going back to previous card
   const handlePrevious = () => {
@@ -85,7 +184,10 @@ const FlashcardSession: React.FC = () => {
   if (showSummary) {
     return (
       <SessionSummary 
-        totalCards={characters.length}
+        totalCards={sessionStats.totalCards}
+        cardsReviewed={sessionStats.cardsReviewed}
+        correctCount={sessionStats.correctCount}
+        incorrectCount={sessionStats.incorrectCount}
         onGoHome={handleEndSession}
       />
     );
@@ -112,6 +214,7 @@ const FlashcardSession: React.FC = () => {
   }
   
   const currentChar = characters[currentIndex];
+  const cardId = generateCardId(currentChar, characterSet);
   
   // Get content for card based on mode
   const cardContent = (() => {
@@ -145,8 +248,15 @@ const FlashcardSession: React.FC = () => {
   return (
     <div className="min-h-screen bg-background p-4">
       <div className="max-w-lg mx-auto bg-white rounded-lg shadow-lg p-6 my-8">
-      {/* Study mode selector  */}
-      {showModeSelector && (
+        {/* Review service status indicator */}
+        {!reviewServiceConnected && (
+          <div className="mb-4 p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-md text-sm">
+            ⚠️ Review service unavailable. Progress tracking is limited.
+          </div>
+        )}
+        
+        {/* Study mode selector */}
+        {showModeSelector && (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
             <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full relative z-50">
               <h3 className="text-xl font-bold mb-4">Which way would you like to study?</h3>
@@ -185,7 +295,7 @@ const FlashcardSession: React.FC = () => {
         )}
         
         {/* Mode switch button */}
-        <div className="mb-4 flex justify-end">
+        <div className="mb-4 flex justify-between items-center">
           <button 
             onClick={() => setShowModeSelector(true)}
             className="text-sm text-primary hover:text-blue-700 flex items-center"
@@ -193,6 +303,15 @@ const FlashcardSession: React.FC = () => {
             <span className="mr-1">↻</span>
             Switch to {studyMode === 'ChineseToEnglish' ? 'English → Chinese' : 'Chinese → English'} Mode
           </button>
+          
+          {/* Session stats */}
+          {reviewServiceConnected && sessionStats.cardsReviewed > 0 && (
+            <div className="text-xs text-gray-600">
+              Reviewed: {sessionStats.cardsReviewed} | 
+              Correct: {sessionStats.correctCount} | 
+              Accuracy: {Math.round((sessionStats.correctCount / sessionStats.cardsReviewed) * 100)}%
+            </div>
+          )}
         </div>
         
         {/* Progress bar */}
@@ -212,11 +331,14 @@ const FlashcardSession: React.FC = () => {
         
         {/* Flashcard */}
         <Flashcard
+          cardId={cardId}
           front={cardContent.front}
           back={cardContent.back}
           onEndSession={handleEndSession}
           onPrevious={history.length > 0 ? handlePrevious : undefined}
           onNext={!isLastCard ? handleNext : undefined}
+          onCardGraded={reviewServiceConnected ? handleCardGraded : undefined}
+          initialGradingState={gradedCards.get(cardId)}
         />
         
         {/* Finish button*/}

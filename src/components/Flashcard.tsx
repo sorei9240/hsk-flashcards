@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { gradeCard, resetCardProgress, type CardProgress } from '../services/reviewService';
 
 interface FlashcardProps {
+  cardId: string;
   front: string;
   back: {
     character: string;
@@ -10,46 +12,127 @@ interface FlashcardProps {
   onEndSession: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
+  onCardGraded?: (cardId: string, isCorrect: boolean, progress: CardProgress) => void;
+  initialGradingState?: boolean; // undefined = not graded, true = correct, false = incorrect
 }
 
 const Flashcard: React.FC<FlashcardProps> = ({
+  cardId,
   front,
   back,
   onEndSession,
   onPrevious,
   onNext,
+  onCardGraded,
+  initialGradingState,
 }) => {
   const [isFlipped, setIsFlipped] = useState(false);
   const [isConfirmingExit, setIsConfirmingExit] = useState(false);
+  const [showGrading, setShowGrading] = useState(false);
+  const [isGrading, setIsGrading] = useState(false);
+  const [hasBeenGraded, setHasBeenGraded] = useState(initialGradingState !== undefined);
+  const [lastGradingResult, setLastGradingResult] = useState<boolean | null>(initialGradingState ?? null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [gradingError, setGradingError] = useState<string | null>(null);
+  
+  // Update state when initialGradingState changes (when navigating between cards)
+  React.useEffect(() => {
+    setHasBeenGraded(initialGradingState !== undefined);
+    setLastGradingResult(initialGradingState ?? null);
+  }, [initialGradingState]);
 
   const handleFlip = () => {
-    setIsFlipped(!isFlipped);
+    if (!showGrading) {
+      setIsFlipped(!isFlipped);
+      if (!isFlipped) {
+        // When flipping to back, always show grading interface
+        // The logic inside will determine whether to show initial grading or correction options
+        setShowGrading(true);
+      }
+    }
   };
 
   const handleEndSession = () => {
     setIsConfirmingExit(true);
   };
 
-  // Reset state when flipping to front
   const handleFlipToFront = (e: React.MouseEvent) => {
     e.stopPropagation();
     setIsFlipped(false);
+    setShowGrading(false);
+    setGradingError(null);
   };
 
-  // Handle navigation with automatic flip to front
-  const handlePrevious = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setIsFlipped(false); // Reset to front of card
-    if (onPrevious) {
-      onPrevious();
+  const handleNavigation = (navigationFn?: () => void) => {
+    return (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setIsFlipped(false);
+      setShowGrading(false);
+      setGradingError(null);
+      if (navigationFn) {
+        navigationFn();
+      }
+    };
+  };
+
+  // Grade the card (Microservice B integration)
+  const handleGrade = async (isCorrect: boolean) => {
+    // Prevent grading while request is in progress
+    if (isGrading) {
+      return;
+    }
+
+    // Check if this is the same choice as before (no change)
+    if (lastGradingResult === isCorrect) {
+      return;
+    }
+
+    setIsGrading(true);
+    setGradingError(null);
+
+    try {
+      const response = await gradeCard(cardId, isCorrect);
+      
+      if (response.success) {
+        // Update local state
+        setHasBeenGraded(true);
+        setLastGradingResult(isCorrect);
+        
+        // Notify parent component about the grading
+        if (onCardGraded) {
+          onCardGraded(cardId, isCorrect, response.progress);
+        }
+        
+        // Show feedback and move to next card after a delay
+        setTimeout(() => {
+          setShowGrading(false);
+          setIsFlipped(false);
+          if (onNext) {
+            onNext();
+          }
+        }, 1000);
+      }
+    } catch (error) {
+      setGradingError(error instanceof Error ? error.message : 'Failed to grade card');
+    } finally {
+      setIsGrading(false);
     }
   };
 
-  const handleNext = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setIsFlipped(false); // Reset to front of card
-    if (onNext) {
-      onNext();
+  // Reset card progress (Microservice B integration)
+  const handleReset = async () => {
+    try {
+      const response = await resetCardProgress(cardId);
+      
+      if (response.success) {
+        setShowResetConfirm(false);
+        // Reset local state to allow fresh grading
+        setHasBeenGraded(false);
+        setLastGradingResult(null);
+        console.log('Card progress reset successfully');
+      }
+    } catch (error) {
+      console.error('Failed to reset card:', error);
     }
   };
 
@@ -81,14 +164,48 @@ const Flashcard: React.FC<FlashcardProps> = ({
         </div>
       )}
 
-      {/* End session button */}
-      <div className="mb-6">
+      {/* Reset confirmation dialog */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm">
+            <p className="text-gray-800 mb-4 text-center">
+              Reset this card's progress? This will restart your learning streak for this card.
+            </p>
+            <div className="flex justify-center space-x-4">
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleReset}
+                className="px-4 py-2 bg-orange-500 text-white rounded-md"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header with end session and reset buttons */}
+      <div className="mb-6 flex justify-between items-center">
         <button
           onClick={handleEndSession}
           className="text-gray-600 hover:text-gray-900 flex items-center"
         >
           <span className="mr-1">←</span>
           <span>End Session</span>
+        </button>
+        
+        <button
+          onClick={() => setShowResetConfirm(true)}
+          className="text-orange-600 hover:text-orange-800 flex items-center text-sm"
+          title="Reset card progress"
+        >
+          <span className="mr-1">↻</span>
+          <span>Reset</span>
         </button>
       </div>
 
@@ -126,11 +243,129 @@ const Flashcard: React.FC<FlashcardProps> = ({
         )}
       </div>
       
+      {/* Grading error */}
+      {gradingError && (
+        <div className="mt-2 p-2 bg-red-100 border border-red-400 text-red-700 rounded-md text-sm">
+          {gradingError}
+        </div>
+      )}
+      
       {/* Action buttons */}
       <div className="mt-6">
-        {isFlipped ? (
+        {isFlipped && showGrading ? (
+          hasBeenGraded ? (
+            // Card has been graded - show current choice and allow correction
+            <div>
+              <div className="mb-4 text-center">
+                <div className={`p-3 border rounded-md mb-3 ${
+                  lastGradingResult 
+                    ? 'bg-green-100 border-green-400 text-green-700' 
+                    : 'bg-red-100 border-red-400 text-red-700'
+                }`}>
+                  {lastGradingResult ? '✓ Marked as Correct' : '✗ Marked as Incorrect'}
+                </div>
+                
+                <p className="text-sm text-gray-600 mb-3">
+                  Made a mistake? You can change your answer:
+                </p>
+                
+                <div className="flex justify-center space-x-3">
+                  <button
+                    onClick={() => handleGrade(false)}
+                    disabled={isGrading || lastGradingResult === false}
+                    className={`py-2 px-4 font-medium rounded-md shadow-sm transition-colors duration-200 flex items-center ${
+                      lastGradingResult === false 
+                        ? 'bg-red-600 text-white cursor-not-allowed' 
+                        : 'bg-red-500 hover:bg-red-600 disabled:bg-red-300 text-white'
+                    }`}
+                  >
+                    {isGrading && lastGradingResult !== false ? (
+                      <span className="animate-spin mr-1">⏳</span>
+                    ) : (
+                      <span className="mr-1">✗</span>
+                    )}
+                    <span>Incorrect</span>
+                  </button>
+                  
+                  <button
+                    onClick={() => handleGrade(true)}
+                    disabled={isGrading || lastGradingResult === true}
+                    className={`py-2 px-4 font-medium rounded-md shadow-sm transition-colors duration-200 flex items-center ${
+                      lastGradingResult === true 
+                        ? 'bg-green-600 text-white cursor-not-allowed' 
+                        : 'bg-green-500 hover:bg-green-600 disabled:bg-green-300 text-white'
+                    }`}
+                  >
+                    {isGrading && lastGradingResult !== true ? (
+                      <span className="animate-spin mr-1">⏳</span>
+                    ) : (
+                      <span className="mr-1">✓</span>
+                    )}
+                    <span>Correct</span>
+                  </button>
+                </div>
+              </div>
+              
+              {/* Flip back button */}
+              <div className="flex justify-center mb-4">
+                <button
+                  onClick={handleFlipToFront}
+                  className="py-2 px-6 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-md shadow-sm transition-colors duration-200 flex items-center"
+                >
+                  <span className="mr-1">↻</span>
+                  <span>Flip Back</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            // Initial grading buttons
+            <div>
+              <div className="mb-4 text-center">
+                <p className="text-sm text-gray-600 mb-3">How well did you know this card?</p>
+                <div className="flex justify-center space-x-3">
+                  <button
+                    onClick={() => handleGrade(false)}
+                    disabled={isGrading}
+                    className="py-2 px-4 bg-red-500 hover:bg-red-600 disabled:bg-red-300 text-white font-medium rounded-md shadow-sm transition-colors duration-200 flex items-center"
+                  >
+                    {isGrading ? (
+                      <span className="animate-spin mr-1">⏳</span>
+                    ) : (
+                      <span className="mr-1">✗</span>
+                    )}
+                    <span>Incorrect</span>
+                  </button>
+                  
+                  <button
+                    onClick={() => handleGrade(true)}
+                    disabled={isGrading}
+                    className="py-2 px-4 bg-green-500 hover:bg-green-600 disabled:bg-green-300 text-white font-medium rounded-md shadow-sm transition-colors duration-200 flex items-center"
+                  >
+                    {isGrading ? (
+                      <span className="animate-spin mr-1">⏳</span>
+                    ) : (
+                      <span className="mr-1">✓</span>
+                    )}
+                    <span>Correct</span>
+                  </button>
+                </div>
+              </div>
+              
+              {/* Flip back button */}
+              <div className="flex justify-center mb-4">
+                <button
+                  onClick={handleFlipToFront}
+                  className="py-2 px-6 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-md shadow-sm transition-colors duration-200 flex items-center"
+                >
+                  <span className="mr-1">↻</span>
+                  <span>Flip Back</span>
+                </button>
+              </div>
+            </div>
+          )
+        ) : isFlipped ? (
+          // Back of card without grading 
           <div>
-            {/* Flip button */}
             <div className="flex justify-center mb-4">
               <button
                 onClick={handleFlipToFront}
@@ -145,7 +380,7 @@ const Flashcard: React.FC<FlashcardProps> = ({
             <div className="mt-4 flex justify-center space-x-4">
               {onPrevious && (
                 <button
-                  onClick={handlePrevious}
+                  onClick={handleNavigation(onPrevious)}
                   className="py-2 px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-md transition-colors duration-200 flex items-center"
                 >
                   <span className="mr-1">←</span>
@@ -155,7 +390,7 @@ const Flashcard: React.FC<FlashcardProps> = ({
               
               {onNext && (
                 <button
-                  onClick={handleNext}
+                  onClick={handleNavigation(onNext)}
                   className="py-2 px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-md transition-colors duration-200 flex items-center"
                 >
                   <span>Next</span>
@@ -165,6 +400,7 @@ const Flashcard: React.FC<FlashcardProps> = ({
             </div>
           </div>
         ) : (
+          // Front of card
           <div className="flex flex-col items-center space-y-4">
             <button
               onClick={(e) => {
@@ -181,7 +417,7 @@ const Flashcard: React.FC<FlashcardProps> = ({
             <div className="flex space-x-4">
               {onPrevious && (
                 <button
-                  onClick={handlePrevious}
+                  onClick={handleNavigation(onPrevious)}
                   className="py-2 px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-md transition-colors duration-200 flex items-center"
                 >
                   <span className="mr-1">←</span>
@@ -191,7 +427,7 @@ const Flashcard: React.FC<FlashcardProps> = ({
               
               {onNext && (
                 <button
-                  onClick={handleNext}
+                  onClick={handleNavigation(onNext)}
                   className="py-2 px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-md transition-colors duration-200 flex items-center"
                 >
                   <span>Next</span>

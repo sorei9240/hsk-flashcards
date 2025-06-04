@@ -20,6 +20,23 @@ export const filterByLevel = (characters: Character[], level: string): Character
   return characters.filter(char => char.level.includes(level));
 };
 
+// Smart form selection to fix surname selection bug
+const selectBestForm = (character: Character) => {
+  // If there's only one form, use it
+  if (character.forms.length === 1) {
+    return character.forms[0];
+  }
+  
+  // Look for a form that doesn't have "surname" as the primary meaning
+  const nonSurnameForm = character.forms.find(form => {
+    const primaryMeaning = form.meanings[0]?.toLowerCase() || '';
+    return !primaryMeaning.includes('surname');
+  });
+  
+  // If non-surname form is found, use it; otherwise fall back to first form
+  return nonSurnameForm || character.forms[0];
+};
+
 // Get content based on character set preference
 export const getCardContent = (
   character: Character,
@@ -32,16 +49,19 @@ export const getCardContent = (
     meanings: string[];
   };
 } => {
+
+  const selectedForm = selectBestForm(character);
+  
   const frontChar = characterSet === 'simplified' 
     ? character.simplified 
-    : character.forms[0].traditional;
+    : selectedForm.traditional;
   
   return {
     front: frontChar,
     back: {
       character: frontChar,
-      pinyin: character.forms[0].transcriptions.pinyin,
-      meanings: character.forms[0].meanings,
+      pinyin: selectedForm.transcriptions.pinyin,
+      meanings: selectedForm.meanings,
     }
   };
 };
@@ -52,11 +72,12 @@ const PREFS_KEY = 'hsk_flashcard_preferences';
 export const savePreferences = (
   level: string,
   characterSet: CharacterSet,
-  studyMode: 'ChineseToEnglish' | 'EnglishToChinese'
+  studyMode: 'ChineseToEnglish' | 'EnglishToChinese',
+  cardCount?: number
 ): void => {
   localStorage.setItem(
     PREFS_KEY,
-    JSON.stringify({ level, characterSet, studyMode })
+    JSON.stringify({ level, characterSet, studyMode, cardCount })
   );
 };
 
@@ -64,18 +85,24 @@ export const loadPreferences = (): {
   level: string;
   characterSet: CharacterSet;
   studyMode: 'ChineseToEnglish' | 'EnglishToChinese';
+  cardCount: number;
 } => {
   const defaultPrefs = {
     level: 'new-1',
     characterSet: 'simplified' as CharacterSet,
-    studyMode: 'ChineseToEnglish' as const
+    studyMode: 'ChineseToEnglish' as const,
+    cardCount: 20
   };
   
   const data = localStorage.getItem(PREFS_KEY);
   if (!data) return defaultPrefs;
   
   try {
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    return {
+      ...defaultPrefs,
+      ...parsed
+    };
   } catch (error) {
     console.error('Error parsing preferences data:', error);
     return defaultPrefs;
