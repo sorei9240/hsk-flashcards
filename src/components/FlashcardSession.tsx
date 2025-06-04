@@ -13,9 +13,9 @@ import {
   checkReviewServiceHealth, 
   generateCardId,
   getCardProgress,
-  gradeCard,
   getDueCards,
-  type DueCard
+  type DueCard,
+  type CardProgress
 } from '../services/reviewService';
 import { 
   checkAudioServiceHealth,
@@ -279,12 +279,11 @@ const FlashcardSession: React.FC = () => {
     }
   }, [currentIndex, audioServiceConnected, preloadEnabled, studyCards, characterSet]);
   
-  // Track cards that have been sent to services to prevent duplicates
-  const [gradedCardsInServices, setGradedCardsInServices] = useState<Set<string>>(new Set());
-  
-  // Handle card grading with proper microservice orchestration
-  const handleCardGraded = async (cardId: string, isCorrect: boolean) => {
-    console.log(`handleCardGraded called: ${cardId} = ${isCorrect}`);
+  // FIXED: Handle card grading WITHOUT duplicate Review Service calls
+  // The Flashcard component already calls the Review Service (gradeCard)
+  // This function should only handle Progress Service coordination and local state
+  const handleCardGraded = async (cardId: string, isCorrect: boolean, progress: CardProgress) => {
+    console.log(`FlashcardSession.handleCardGraded: ${cardId} = ${isCorrect}`);
     
     const wasGradedBefore = gradedCards.has(cardId);
     const previousResult = gradedCards.get(cardId);
@@ -295,6 +294,7 @@ const FlashcardSession: React.FC = () => {
       return;
     }
     
+    // Update local state
     setGradedCards(prev => new Map(prev.set(cardId, isCorrect)));
     
     // Update session card results for progress service
@@ -326,61 +326,36 @@ const FlashcardSession: React.FC = () => {
       }));
     }
     
-    // Frontend Orchestration: Send grading to Review Service (Microservice B)
-    // Use stronger deduplication to prevent double calls to services
-    const serviceCallKey = `${cardId}_${isCorrect}`;
-    if (reviewServiceConnected && !gradedCardsInServices.has(serviceCallKey)) {
+    // Send grading data to Progress Service (Microservice D)
+    if (progressStatsServiceConnected) {
       try {
-        console.log(`Sending to Review Service: ${cardId} = ${isCorrect}`);
-        setGradedCardsInServices(prev => new Set(prev.add(serviceCallKey)));
+        const deckId = formatDeckId(currentLevel);
         
-        const result = await gradeCard(cardId, isCorrect);
-        console.log(`Card graded in Review Service: ${cardId} ${isCorrect ? 'correct' : 'incorrect'}`);
-        console.log(`New streak: ${result.progress.streak}, Next review: ${result.progress.nextReviewDate}`);
+        console.log(`Sending to Progress Service: ${cardId} = ${isCorrect}`);
         
-        // Frontend Orchestration: Send grading data to Progress Service (Microservice D)
-        if (progressStatsServiceConnected) {
-          try {
-            const deckId = formatDeckId(currentLevel);
-            
-            console.log(`Sending to Progress Service: ${cardId} = ${isCorrect}`);
-            
-            // Send individual card grading to progress service
-            await fetch('http://localhost:3003/card-graded', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                cardId,
-                deckId,
-                isCorrect,
-                timestamp: new Date().toISOString(),
-                reviewData: {
-                  streak: result.progress.streak,
-                  totalReviews: result.progress.totalReviews,
-                  correctReviews: result.progress.correctReviews,
-                  nextReviewDate: result.progress.nextReviewDate
-                }
-              })
-            });
-            
-            console.log(`Card grading sent to Progress Service: ${cardId}`);
-          } catch (error) {
-            console.warn('Failed to send grading to Progress Service:', error);
-            // Don't fail the grading if progress service is down
-          }
-        }
-        
-      } catch (error) {
-        console.error('Failed to grade card in Review Service:', error);
-        // Remove from dedupe set on error so it can be retried
-        setGradedCardsInServices(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(serviceCallKey);
-          return newSet;
+        // Send individual card grading to progress service
+        await fetch('http://localhost:3003/card-graded', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            cardId,
+            deckId,
+            isCorrect,
+            timestamp: new Date().toISOString(),
+            reviewData: {
+              streak: progress.streak,
+              totalReviews: progress.totalReviews,
+              correctReviews: progress.correctReviews,
+              nextReviewDate: progress.nextReviewDate
+            }
+          })
         });
+        
+        console.log(`Card grading sent to Progress Service: ${cardId}`);
+      } catch (error) {
+        console.warn('Failed to send grading to Progress Service:', error);
+        // Don't fail the grading if progress service is down
       }
-    } else {
-      console.log(`Skipping service call (already sent): ${serviceCallKey}`);
     }
   };
   
@@ -439,7 +414,7 @@ const FlashcardSession: React.FC = () => {
         </div>
       </div>
     );
-  }
+  };
   
   if (showSummary) {
     return (

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { gradeCard, resetCardProgress, type CardProgress } from '../services/reviewService';
 import { getAudioUrl, playAudioUrl, checkAudioServiceHealth, extractChineseText } from '../services/audioService';
+import { getCardImage, checkImageServiceHealth, extractImageSearchTerm } from '../services/imageService';
 
 interface FlashcardProps {
   cardId: string;
@@ -14,9 +15,9 @@ interface FlashcardProps {
   onPrevious?: () => void;
   onNext?: () => void;
   onCardGraded?: (cardId: string, isCorrect: boolean, progress: CardProgress) => void;
-  initialGradingState?: boolean; // undefined = not graded, true = correct, false = incorrect
+  initialGradingState?: boolean; 
   characterSet?: 'simplified' | 'traditional'; // Add character set for audio
-  currentCharacter?: any; // Add character object for audio extraction
+  currentCharacter?: any; // Add character object for audio
 }
 
 const Flashcard: React.FC<FlashcardProps> = ({
@@ -47,26 +48,49 @@ const Flashcard: React.FC<FlashcardProps> = ({
   const [audioError, setAudioError] = useState<string | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   
-  // Check audio service health on component mount
+  // Image service integration (New Image Microservice)
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageServiceConnected, setImageServiceConnected] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [showImage, setShowImage] = useState(true); // Toggle to show/hide images
+  
+  // Check service health on component mount
   useEffect(() => {
-    const checkAudioHealth = async () => {
-      const isHealthy = await checkAudioServiceHealth();
-      setAudioServiceConnected(isHealthy);
+    const checkServiceHealth = async () => {
+      const [isAudioHealthy, isImageHealthy] = await Promise.all([
+        checkAudioServiceHealth(),
+        checkImageServiceHealth()
+      ]);
       
-      if (!isHealthy) {
+      setAudioServiceConnected(isAudioHealthy);
+      setImageServiceConnected(isImageHealthy);
+      
+      if (!isAudioHealthy) {
         console.warn('Audio service is not available. Audio features will be limited.');
+      }
+      
+      if (!isImageHealthy) {
+        console.warn('Image service is not available. Image features will be limited.');
       }
     };
     
-    checkAudioHealth();
+    checkServiceHealth();
   }, []);
   
-  // Load audio when card changes (User Story 1: Pronunciation Examples)
+  // Load audio when card changes
   useEffect(() => {
     if (audioServiceConnected && front) {
       loadAudio(front);
     }
   }, [front, audioServiceConnected]);
+  
+  // Load image when card changes
+  useEffect(() => {
+    if (imageServiceConnected && showImage && back.meanings.length > 0) {
+      loadImage();
+    }
+  }, [back.meanings, imageServiceConnected, showImage]);
   
   // Update state when initialGradingState changes (when navigating between cards)
   React.useEffect(() => {
@@ -94,6 +118,36 @@ const Flashcard: React.FC<FlashcardProps> = ({
       setAudioError('Failed to load audio');
     } finally {
       setAudioLoading(false);
+    }
+  };
+
+  // Load image for the current card based on English meanings
+  const loadImage = async () => {
+    if (!imageServiceConnected || !showImage) return;
+    
+    setImageLoading(true);
+    setImageError(null);
+    
+    try {
+      // Use English meanings for image search
+      const searchTerm = extractImageSearchTerm(currentCharacter, back.meanings);
+      
+      console.log(`Loading image for search term: "${searchTerm}"`);
+      
+      const response = await getCardImage(searchTerm);
+      
+      if (response.success) {
+        setImageUrl(response.imageUrl);
+        console.log(`Image loaded for "${searchTerm}" (cached: ${response.cached})`);
+      } else {
+        setImageError(response.error || 'Failed to load image');
+        console.warn(`Image loading failed for "${searchTerm}":`, response.error);
+      }
+    } catch (error) {
+      console.error('Failed to load image:', error);
+      setImageError('Failed to load image');
+    } finally {
+      setImageLoading(false);
     }
   };
 
@@ -209,12 +263,20 @@ const Flashcard: React.FC<FlashcardProps> = ({
 
   return (
     <div className="relative w-full max-w-md mx-auto">
-      {/* Audio service status indicator */}
-      {!audioServiceConnected && (
-        <div className="mb-4 p-2 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-md text-xs">
-          ⚠️ Audio service unavailable. Pronunciation features are disabled.
-        </div>
-      )}
+      {/* Service status indicators */}
+      <div className="mb-4 space-y-1">
+        {!audioServiceConnected && (
+          <div className="p-2 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-md text-xs">
+            ⚠️ Audio service unavailable. Pronunciation features are disabled.
+          </div>
+        )}
+        
+        {!imageServiceConnected && (
+          <div className="p-2 bg-orange-100 border border-orange-400 text-orange-700 rounded-md text-xs">
+            🖼️ Image service unavailable. Visual learning features are disabled.
+          </div>
+        )}
+      </div>
 
       {/* Exit confirmation dialog */}
       {isConfirmingExit && (
@@ -267,7 +329,7 @@ const Flashcard: React.FC<FlashcardProps> = ({
         </div>
       )}
 
-      {/* Header with end session and reset buttons */}
+      {/* Header with controls */}
       <div className="mb-6 flex justify-between items-center">
         <button
           onClick={handleEndSession}
@@ -278,6 +340,20 @@ const Flashcard: React.FC<FlashcardProps> = ({
         </button>
         
         <div className="flex items-center space-x-2">
+          {imageServiceConnected && (
+            <button
+              onClick={() => setShowImage(!showImage)}
+              className={`text-xs px-2 py-1 rounded-md transition-colors ${
+                showImage 
+                  ? 'bg-green-100 text-green-700 hover:bg-green-200' 
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+              title="Toggle images"
+            >
+              🖼️ {showImage ? 'ON' : 'OFF'}
+            </button>
+          )}
+          
           <button
             onClick={() => setShowResetConfirm(true)}
             className="text-orange-600 hover:text-orange-800 flex items-center text-sm"
@@ -289,60 +365,95 @@ const Flashcard: React.FC<FlashcardProps> = ({
         </div>
       </div>
 
-      {/* Audio error display */}
+      {/* Error displays */}
       {audioError && (
         <div className="mb-4 p-2 bg-red-100 border border-red-400 text-red-700 rounded-md text-sm">
-          {audioError}
+          Audio: {audioError}
+        </div>
+      )}
+      
+      {imageError && showImage && (
+        <div className="mb-4 p-2 bg-orange-100 border border-orange-400 text-orange-700 rounded-md text-sm">
+          Image: {imageError}
         </div>
       )}
 
       {/* Card display */}
       <div 
-        className="w-full bg-white rounded-xl shadow-lg p-6 cursor-pointer min-h-[264px] flex flex-col items-center justify-center overflow-hidden"
+        className="w-full bg-white rounded-xl shadow-lg p-6 cursor-pointer min-h-[320px] flex flex-col items-center justify-center overflow-hidden"
         onClick={handleFlip}
       >
         {!isFlipped ? (
           // Front
           <div className="text-center w-full">
-            <p className="text-3xl font-medium text-gray-800 break-words overflow-hidden overflow-ellipsis px-2">
+            <p className="text-4xl font-medium text-gray-800 break-words overflow-hidden overflow-ellipsis px-2">
               {front}
             </p>
           </div>
         ) : (
           // Back
-          <div className="text-center w-full overflow-auto max-h-[200px]">
-            {back.character && back.character !== front && (
-              <p className="text-3xl font-medium mb-2 text-gray-800 break-words px-2">
-                {back.character}
+          <div className="text-center w-full overflow-auto max-h-[280px] space-y-4">
+            {/* Character and Pinyin */}
+            <div>
+              {back.character && back.character !== front && (
+                <p className="text-3xl font-medium mb-2 text-gray-800 break-words px-2">
+                  {back.character}
+                </p>
+              )}
+              <p className="text-lg text-gray-800 mb-2 break-words px-2">
+                {back.pinyin}
               </p>
-            )}
-            <p className="text-lg text-gray-800 mb-4 break-words px-2">
-              {back.pinyin}
-            </p>
+              
+              {/* Audio button */}
+              {audioServiceConnected && (
+                <div className="flex justify-center mb-3">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePlayAudio();
+                    }}
+                    disabled={audioLoading || isPlayingAudio || !audioUrl}
+                    className="w-10 h-10 bg-blue-200 hover:bg-blue-300 text-white rounded-lg disabled:bg-gray-300 transition-colors duration-200 flex items-center justify-center"
+                    title="Play pronunciation"
+                  >
+                    {audioLoading ? '⏳' : isPlayingAudio ? '🔊' : '🔊'}
+                  </button>
+                </div>
+              )}
+            </div>
             
-            {/* Audio button under pinyin */}
-            {audioServiceConnected && (
-              <div className="flex justify-center mb-4">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handlePlayAudio();
-                  }}
-                  disabled={audioLoading || isPlayingAudio || !audioUrl}
-                  className="w-10 h-10 bg-blue-200 hover:bg-blue-300 text-white rounded-lg disabled:bg-gray-300 transition-colors duration-200 flex items-center justify-center"
-                  title="Play pronunciation"
-                >
-                  {audioLoading ? '⏳' : isPlayingAudio ? '🔊' : '🔊'}
-                </button>
+            {/* Image */}
+            {showImage && imageServiceConnected && (
+              <div className="flex justify-center mb-3">
+                {imageLoading ? (
+                  <div className="w-32 h-24 bg-gray-200 rounded-lg flex items-center justify-center">
+                    <span className="text-gray-500 text-sm">Loading...</span>
+                  </div>
+                ) : imageUrl ? (
+                  <img
+                    src={imageUrl}
+                    alt={`Visual representation of ${back.meanings[0]}`}
+                    className="w-32 h-24 object-cover rounded-lg shadow-sm border"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <div className="w-32 h-24 bg-gray-100 rounded-lg flex items-center justify-center">
+                    <span className="text-gray-400 text-xs text-center px-2">No image</span>
+                  </div>
+                )}
               </div>
             )}
             
+            {/* Meanings - Display all definitions */}
             <div className="px-2">
-              {back.meanings.map((meaning, index) => (
-                <p key={index} className="text-md mb-1 text-gray-800 break-words">
-                  {meaning}
-                </p>
-              ))}
+              <div className="space-y-1">
+                {back.meanings.map((meaning, index) => (
+                  <div key={index} className="text-md text-gray-800 break-words">
+                    <span className="inline-block w-4 text-gray-500 text-sm">{index + 1}.</span>
+                    <span className="ml-1">{meaning}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
