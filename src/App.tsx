@@ -3,6 +3,7 @@ import HomePage from './components/HomePage';
 import FlashcardSession from './components/FlashcardSession';
 import HelpFAQ from './components/HelpFAQ';
 import VocabularyList from './components/VocabularyList';
+import ProgressDashboard from './components/ProgressDashboard';
 
 function App() {
   return (
@@ -13,6 +14,7 @@ function App() {
           <Route path="/study" element={<FlashcardSession />} />
           <Route path="/help" element={<HelpFAQ />} />
           <Route path="/vocabulary" element={<VocabularyList />} />
+          <Route path="/progress" element={<ProgressDashboard />} />
         </Routes>
       </div>
     </Router>

@@ -28,6 +28,10 @@ const HomePage: React.FC = () => {
     navigate('/vocabulary');
   };
 
+  const handleViewProgress = () => {
+    navigate('/progress');
+  };
+
   const handleViewHelp = () => {
     navigate('/help');
   };
@@ -114,12 +118,21 @@ const HomePage: React.FC = () => {
             <span className="text-xl">Start Study Session ({cardCount} cards)</span>
           </button>
           
-          <button
-            onClick={handleViewVocabulary}
-            className="w-full bg-blue-600 hover:bg-blue-400 text-white font-medium py-3 px-4 rounded-md shadow-sm transition-colors duration-200 flex items-center justify-center"
-          >
-            <span className="text-xl">View Vocabulary List</span>
-          </button>
+          <div className="grid grid-cols-2 gap-4">
+            <button
+              onClick={handleViewVocabulary}
+              className="bg-blue-600 hover:bg-blue-400 text-white font-medium py-3 px-4 rounded-md shadow-sm transition-colors duration-200 flex items-center justify-center"
+            >
+              <span className="text-sm">📚 Vocabulary</span>
+            </button>
+            
+            <button
+              onClick={handleViewProgress}
+              className="bg-green-600 hover:bg-green-400 text-white font-medium py-3 px-4 rounded-md shadow-sm transition-colors duration-200 flex items-center justify-center"
+            >
+              <span className="text-sm">📊 Progress</span>
+            </button>
+          </div>
         </div>
         
         <div className="flex justify-center mt-6">

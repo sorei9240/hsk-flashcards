@@ -13,132 +13,233 @@ import {
   checkReviewServiceHealth, 
   generateCardId,
   getCardProgress,
-  type CardProgress 
+  gradeCard,
+  getDueCards,
+  type DueCard
 } from '../services/reviewService';
 import { 
   checkAudioServiceHealth,
   preloadAudio,
   extractChineseText 
 } from '../services/audioService';
+import {
+  checkProgressStatsServiceHealth,
+  recordSession,
+  formatDeckId
+} from '../services/progressStatsService';
 
 interface SessionStats {
   totalCards: number;
   cardsReviewed: number;
   correctCount: number;
   incorrectCount: number;
-  averageResponseTime: number;
+  sessionStartTime: number;
+  newCardsStudied: number;
+  reviewCardsStudied: number;
+}
+
+interface StudyCard {
+  character: Character;
+  cardId: string;
+  isDue: boolean;
+  dueCard?: DueCard;
+  isNew: boolean;
 }
 
 const FlashcardSession: React.FC = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState<boolean>(true);
-  const [characters, setCharacters] = useState<Character[]>([]);
+  const [studyCards, setStudyCards] = useState<StudyCard[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [showSummary, setShowSummary] = useState<boolean>(false);
   const [studyMode, setStudyMode] = useState<'ChineseToEnglish' | 'EnglishToChinese'>('ChineseToEnglish');
   const [characterSet, setCharacterSet] = useState<CharacterSet>('simplified');
   const [history, setHistory] = useState<number[]>([]);
   const [showModeSelector, setShowModeSelector] = useState<boolean>(false);
+  const [preloadEnabled, setPreloadEnabled] = useState<boolean>(true);
+  const [currentLevel, setCurrentLevel] = useState<string>('new-1');
+  const [useSRS, setUseSRS] = useState<boolean>(true);
+  
+  // Service connection states
   const [reviewServiceConnected, setReviewServiceConnected] = useState<boolean>(false);
   const [audioServiceConnected, setAudioServiceConnected] = useState<boolean>(false);
-  const [preloadEnabled, setPreloadEnabled] = useState<boolean>(true);
+  const [progressStatsServiceConnected, setProgressStatsServiceConnected] = useState<boolean>(false);
+  
+  // Session tracking
   const [sessionStats, setSessionStats] = useState<SessionStats>({
     totalCards: 0,
     cardsReviewed: 0,
     correctCount: 0,
     incorrectCount: 0,
-    averageResponseTime: 0
+    sessionStartTime: Date.now(),
+    newCardsStudied: 0,
+    reviewCardsStudied: 0
   });
   
-  // Track graded cards at session level
   const [gradedCards, setGradedCards] = useState<Map<string, boolean>>(new Map());
+  const [sessionCardResults, setSessionCardResults] = useState<Array<{ cardId: string; isCorrect: boolean }>>([]);
   
-  // Check review service connection
+  // Check all microservice connections
   useEffect(() => {
-    const checkConnection = async () => {
-      const isHealthy = await checkReviewServiceHealth();
-      setReviewServiceConnected(isHealthy);
+    const checkConnections = async () => {
+      const [reviewHealthy, audioHealthy, progressHealthy] = await Promise.all([
+        checkReviewServiceHealth(),
+        checkAudioServiceHealth(), 
+        checkProgressStatsServiceHealth()
+      ]);
       
-      if (!isHealthy) {
-        console.warn('Review service is not available. Grading features will be limited.');
-      }
+      setReviewServiceConnected(reviewHealthy);
+      setAudioServiceConnected(audioHealthy);
+      setProgressStatsServiceConnected(progressHealthy);
+      
+      console.log('Service connections:', {
+        review: reviewHealthy,
+        audio: audioHealthy,
+        progress: progressHealthy
+      });
     };
     
-    checkConnection();
+    checkConnections();
   }, []);
   
-  // Check audio service connection
-  useEffect(() => {
-    const checkAudioConnection = async () => {
-      const isHealthy = await checkAudioServiceHealth();
-      setAudioServiceConnected(isHealthy);
-      
-      if (!isHealthy) {
-        console.warn('Audio service is not available. Pronunciation features will be disabled.');
-      }
-    };
-    
-    checkAudioConnection();
-  }, []);
-  
-  // Load character data AND previously graded cards
+  // Load character data and create study session with SRS
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
       const prefs = loadPreferences();
       setStudyMode(prefs.studyMode);
       setCharacterSet(prefs.characterSet);
+      setCurrentLevel(prefs.level);
       
       const allCharacters = await loadCharacterData();
       const filteredCharacters = filterByLevel(allCharacters, prefs.level);
-      const shuffled = [...filteredCharacters].sort(() => 0.5 - Math.random());
       
-      const cardCount = prefs.cardCount || 20;
-      const sessionCards = shuffled.slice(0, Math.min(cardCount, filteredCharacters.length));
+      let studyCardsToCreate: StudyCard[] = [];
       
-      setCharacters(sessionCards);
-      setSessionStats(prev => ({
-        ...prev,
-        totalCards: sessionCards.length
-      }));
-      
-      // Load previously graded cards from microservice
-      if (reviewServiceConnected) {
+      if (reviewServiceConnected && useSRS) {
+        // SRS Mode: Load due cards first, then fill with new cards
         try {
-          const previouslyGradedMap = new Map<string, boolean>();
+          const dueCardsResponse = await getDueCards();
+          const dueCards = dueCardsResponse.dueCards || [];
           
-          for (const char of sessionCards) {
-            const cardId = generateCardId(char, prefs.characterSet);
-            try {
-              const progress = await getCardProgress(cardId);
-              if (progress.totalReviews > 0) {
-                const isCorrect = progress.correctReviews > (progress.totalReviews / 2);
-                previouslyGradedMap.set(cardId, isCorrect);
+          // Filter due cards to match current level
+          const levelDueCards = dueCards.filter(dueCard => 
+            dueCard.cardId.startsWith(formatDeckId(prefs.level) + '_')
+          );
+          
+          console.log(`Found ${levelDueCards.length} due cards for ${prefs.level}`);
+          
+          // Add due cards to study session
+          for (const dueCard of levelDueCards) {
+            const cardIdParts = dueCard.cardId.split('_');
+            if (cardIdParts.length > 1) {
+              const characterText = cardIdParts[1];
+              const character = filteredCharacters.find(char => 
+                char.simplified === characterText || 
+                char.forms[0]?.traditional === characterText
+              );
+              
+              if (character) {
+                studyCardsToCreate.push({
+                  character,
+                  cardId: dueCard.cardId,
+                  isDue: true,
+                  dueCard,
+                  isNew: false
+                });
               }
-            } catch (error) {
-              console.log(`No previous data for card ${cardId}`);
             }
           }
           
-          setGradedCards(previouslyGradedMap);
-          console.log(`Loaded ${previouslyGradedMap.size} previously graded cards`);
+          // Fill remaining slots with new cards
+          const cardCount = prefs.cardCount || 20;
+          const newCardsNeeded = Math.max(0, cardCount - studyCardsToCreate.length);
+          
+          if (newCardsNeeded > 0) {
+            // Find cards that haven't been studied yet
+            const existingCardIds = new Set(studyCardsToCreate.map(sc => sc.cardId));
+            const newCharacters = filteredCharacters.filter(char => {
+              const cardId = generateCardId(char, prefs.characterSet);
+              return !existingCardIds.has(cardId);
+            });
+            
+            // Shuffle and take needed amount
+            const shuffledNew = [...newCharacters].sort(() => 0.5 - Math.random());
+            const selectedNew = shuffledNew.slice(0, newCardsNeeded);
+            
+            for (const character of selectedNew) {
+              const cardId = generateCardId(character, prefs.characterSet);
+              studyCardsToCreate.push({
+                character,
+                cardId,
+                isDue: false,
+                isNew: true
+              });
+            }
+          }
+          
         } catch (error) {
-          console.error('Error loading previous grades:', error);
+          console.error('Error loading due cards, falling back to random mode:', error);
+          // Fall back to random mode if SRS fails
+          const shuffled = [...filteredCharacters].sort(() => 0.5 - Math.random());
+          const cardCount = prefs.cardCount || 20;
+          const selectedCards = shuffled.slice(0, Math.min(cardCount, filteredCharacters.length));
+          
+          studyCardsToCreate = selectedCards.map(character => ({
+            character,
+            cardId: generateCardId(character, prefs.characterSet),
+            isDue: false,
+            isNew: true
+          }));
+        }
+      } else {
+        // Random Mode: Just pick random cards
+        const shuffled = [...filteredCharacters].sort(() => 0.5 - Math.random());
+        const cardCount = prefs.cardCount || 20;
+        const selectedCards = shuffled.slice(0, Math.min(cardCount, filteredCharacters.length));
+        
+        studyCardsToCreate = selectedCards.map(character => ({
+          character,
+          cardId: generateCardId(character, prefs.characterSet),
+          isDue: false,
+          isNew: true
+        }));
+      }
+      
+      setStudyCards(studyCardsToCreate);
+      setSessionStats(prev => ({
+        ...prev,
+        totalCards: studyCardsToCreate.length,
+        sessionStartTime: Date.now()
+      }));
+      
+      // Load previously graded cards from this session
+      const previouslyGradedMap = new Map<string, boolean>();
+      for (const studyCard of studyCardsToCreate) {
+        if (reviewServiceConnected && !studyCard.isNew) {
+          try {
+            const progress = await getCardProgress(studyCard.cardId);
+            if (progress.totalReviews > 0) {
+              const isCorrect = progress.correctReviews > (progress.totalReviews / 2);
+              previouslyGradedMap.set(studyCard.cardId, isCorrect);
+            }
+          } catch (error) {
+            // Card not found, that's fine for new cards
+          }
         }
       }
       
-      // Initial audio preload for first 5 cards 
-      if (audioServiceConnected && preloadEnabled && sessionCards.length > 1) {
+      setGradedCards(previouslyGradedMap);
+      
+      // Preload audio for first few cards
+      if (audioServiceConnected && preloadEnabled && studyCardsToCreate.length > 1) {
         try {
-          const textsToPreload = sessionCards.slice(0, 5).map(char => {
-            return extractChineseText(char, prefs.characterSet) || char.simplified;
+          const textsToPreload = studyCardsToCreate.slice(0, 5).map(studyCard => {
+            return extractChineseText(studyCard.character, prefs.characterSet) || studyCard.character.simplified;
           }).filter(Boolean);
           
           if (textsToPreload.length > 0) {
-            console.log('Preloading audio for upcoming cards...');
-            preloadAudio(textsToPreload).catch(error => {
-              console.error('Initial preload failed:', error);
-            });
+            preloadAudio(textsToPreload).catch(console.error);
           }
         } catch (error) {
           console.error('Error setting up initial preload:', error);
@@ -149,50 +250,73 @@ const FlashcardSession: React.FC = () => {
     };
     
     loadData();
-  }, [reviewServiceConnected, audioServiceConnected]);
+  }, [reviewServiceConnected, audioServiceConnected, useSRS]);
   
-  // Preload audio for next cards when advancing
+  // Preload audio for upcoming cards
   useEffect(() => {
-    if (audioServiceConnected && preloadEnabled && characters.length > 0) {
+    if (audioServiceConnected && preloadEnabled && studyCards.length > 0) {
       const preloadNextCards = async () => {
         const startIndex = currentIndex + 1;
-        const endIndex = Math.min(startIndex + 3, characters.length);
-        const nextCards = characters.slice(startIndex, endIndex);
+        const endIndex = Math.min(startIndex + 3, studyCards.length);
+        const nextCards = studyCards.slice(startIndex, endIndex);
         
         if (nextCards.length > 0) {
           try {
-            const textsToPreload = nextCards.map(char => {
-              return extractChineseText(char, characterSet) || char.simplified;
+            const textsToPreload = nextCards.map(studyCard => {
+              return extractChineseText(studyCard.character, characterSet) || studyCard.character.simplified;
             }).filter(Boolean);
             
             if (textsToPreload.length > 0) {
-              preloadAudio(textsToPreload).catch(error => {
-                console.error('Background preload failed:', error);
-              });
+              preloadAudio(textsToPreload).catch(console.error);
             }
           } catch (error) {
-            console.error('Error setting up audio preload:', error);
+            console.error('Error preloading audio:', error);
           }
         }
       };
       
       preloadNextCards();
     }
-  }, [currentIndex, audioServiceConnected, preloadEnabled, characters, characterSet]);
+  }, [currentIndex, audioServiceConnected, preloadEnabled, studyCards, characterSet]);
   
-  // Handle card grading 
-  const handleCardGraded = (cardId: string, isCorrect: boolean, progress: CardProgress) => {
+  // Track cards that have been sent to services to prevent duplicates
+  const [gradedCardsInServices, setGradedCardsInServices] = useState<Set<string>>(new Set());
+  
+  // Handle card grading with proper microservice orchestration
+  const handleCardGraded = async (cardId: string, isCorrect: boolean) => {
+    console.log(`handleCardGraded called: ${cardId} = ${isCorrect}`);
+    
     const wasGradedBefore = gradedCards.has(cardId);
     const previousResult = gradedCards.get(cardId);
     
+    // Don't do anything if the result is the same as before
+    if (wasGradedBefore && previousResult === isCorrect) {
+      console.log(`Skipping duplicate grading: ${cardId} = ${isCorrect}`);
+      return;
+    }
+    
     setGradedCards(prev => new Map(prev.set(cardId, isCorrect)));
     
+    // Update session card results for progress service
+    const existingResultIndex = sessionCardResults.findIndex(r => r.cardId === cardId);
+    if (existingResultIndex >= 0) {
+      const updatedResults = [...sessionCardResults];
+      updatedResults[existingResultIndex] = { cardId, isCorrect };
+      setSessionCardResults(updatedResults);
+    } else {
+      setSessionCardResults(prev => [...prev, { cardId, isCorrect }]);
+    }
+    
+    // Update session stats
     if (!wasGradedBefore) {
+      const currentCard = studyCards[currentIndex];
       setSessionStats(prev => ({
         ...prev,
         cardsReviewed: prev.cardsReviewed + 1,
         correctCount: prev.correctCount + (isCorrect ? 1 : 0),
-        incorrectCount: prev.incorrectCount + (!isCorrect ? 1 : 0)
+        incorrectCount: prev.incorrectCount + (!isCorrect ? 1 : 0),
+        newCardsStudied: prev.newCardsStudied + (currentCard.isNew ? 1 : 0),
+        reviewCardsStudied: prev.reviewCardsStudied + (!currentCard.isNew ? 1 : 0)
       }));
     } else if (previousResult !== isCorrect) {
       setSessionStats(prev => ({
@@ -202,11 +326,64 @@ const FlashcardSession: React.FC = () => {
       }));
     }
     
-    console.log(`Card ${cardId} graded as ${isCorrect ? 'correct' : 'incorrect'}`);
-    console.log(`New streak: ${progress.streak}, Next review: ${progress.nextReviewDate}`);
+    // Frontend Orchestration: Send grading to Review Service (Microservice B)
+    // Use stronger deduplication to prevent double calls to services
+    const serviceCallKey = `${cardId}_${isCorrect}`;
+    if (reviewServiceConnected && !gradedCardsInServices.has(serviceCallKey)) {
+      try {
+        console.log(`Sending to Review Service: ${cardId} = ${isCorrect}`);
+        setGradedCardsInServices(prev => new Set(prev.add(serviceCallKey)));
+        
+        const result = await gradeCard(cardId, isCorrect);
+        console.log(`Card graded in Review Service: ${cardId} ${isCorrect ? 'correct' : 'incorrect'}`);
+        console.log(`New streak: ${result.progress.streak}, Next review: ${result.progress.nextReviewDate}`);
+        
+        // Frontend Orchestration: Send grading data to Progress Service (Microservice D)
+        if (progressStatsServiceConnected) {
+          try {
+            const deckId = formatDeckId(currentLevel);
+            
+            console.log(`Sending to Progress Service: ${cardId} = ${isCorrect}`);
+            
+            // Send individual card grading to progress service
+            await fetch('http://localhost:3003/card-graded', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                cardId,
+                deckId,
+                isCorrect,
+                timestamp: new Date().toISOString(),
+                reviewData: {
+                  streak: result.progress.streak,
+                  totalReviews: result.progress.totalReviews,
+                  correctReviews: result.progress.correctReviews,
+                  nextReviewDate: result.progress.nextReviewDate
+                }
+              })
+            });
+            
+            console.log(`Card grading sent to Progress Service: ${cardId}`);
+          } catch (error) {
+            console.warn('Failed to send grading to Progress Service:', error);
+            // Don't fail the grading if progress service is down
+          }
+        }
+        
+      } catch (error) {
+        console.error('Failed to grade card in Review Service:', error);
+        // Remove from dedupe set on error so it can be retried
+        setGradedCardsInServices(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(serviceCallKey);
+          return newSet;
+        });
+      }
+    } else {
+      console.log(`Skipping service call (already sent): ${serviceCallKey}`);
+    }
   };
   
-  // Handle going back to previous card
   const handlePrevious = () => {
     if (history.length === 0) return;
     const prevIndex = history[history.length - 1];
@@ -214,9 +391,8 @@ const FlashcardSession: React.FC = () => {
     setCurrentIndex(prevIndex);
   };
   
-  // Handle moving to next card
   const handleNext = () => {
-    if (currentIndex >= characters.length - 1) {
+    if (currentIndex >= studyCards.length - 1) {
       setShowSummary(true);
     } else {
       setHistory(prev => [...prev, currentIndex]);
@@ -224,8 +400,30 @@ const FlashcardSession: React.FC = () => {
     }
   };
   
-  // Handle session ending
-  const handleEndSession = () => {
+  // Handle session end with proper session recording
+  const handleEndSession = async () => {
+    // Frontend Orchestration: Record session to Progress Service (Microservice D)
+    if (progressStatsServiceConnected && sessionCardResults.length > 0) {
+      try {
+        const sessionDuration = Math.floor((Date.now() - sessionStats.sessionStartTime) / 1000);
+        const deckId = formatDeckId(currentLevel);
+        
+        await recordSession({
+          deckId,
+          cardsStudied: sessionStats.cardsReviewed,
+          correctAnswers: sessionStats.correctCount,
+          incorrectAnswers: sessionStats.incorrectCount,
+          sessionDuration,
+          cardResults: sessionCardResults
+        });
+        
+        console.log('Session recorded to Progress Service successfully');
+      } catch (error) {
+        console.error('Failed to record session:', error);
+        // Don't block navigation on failure
+      }
+    }
+    
     navigate('/');
   };
   
@@ -255,7 +453,7 @@ const FlashcardSession: React.FC = () => {
     );
   }
   
-  if (characters.length === 0) {
+  if (studyCards.length === 0) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center p-6 bg-white rounded-lg shadow-lg">
@@ -275,12 +473,9 @@ const FlashcardSession: React.FC = () => {
     );
   }
   
-  const currentChar = characters[currentIndex];
-  const cardId = generateCardId(currentChar, characterSet);
-  
-  // Get content for card based on mode
+  const currentStudyCard = studyCards[currentIndex];
   const cardContent = (() => {
-    const content = getCardContent(currentChar, characterSet);
+    const content = getCardContent(currentStudyCard.character, characterSet);
     
     if (studyMode === 'ChineseToEnglish') {
       return {
@@ -303,28 +498,37 @@ const FlashcardSession: React.FC = () => {
     }
   })();
   
-  const isLastCard = currentIndex === characters.length - 1;
+  const isLastCard = currentIndex === studyCards.length - 1;
   
   return (
     <div className="min-h-screen bg-background p-4">
       <div className="max-w-lg mx-auto bg-white rounded-lg shadow-lg p-6 my-8">
+        
         {/* Service status indicators */}
         <div className="mb-4 space-y-2">
           {!reviewServiceConnected && (
             <div className="p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-md text-sm">
-              ⚠️ Review service unavailable. Progress tracking is limited.
+              ⚠️ Review service unavailable. SRS features disabled.
             </div>
           )}
           
           {!audioServiceConnected && (
             <div className="p-3 bg-orange-100 border border-orange-400 text-orange-700 rounded-md text-sm">
-              🔊 Audio service unavailable. Pronunciation features are disabled.
+              🔊 Audio service unavailable. Pronunciation features disabled.
             </div>
           )}
           
-          {audioServiceConnected && preloadEnabled && (
-            <div className="p-2 bg-blue-50 border border-blue-200 text-blue-700 rounded-md text-xs">
-              🎵 Audio preloading enabled for smooth playback
+          {!progressStatsServiceConnected && (
+            <div className="p-3 bg-red-100 border border-red-400 text-red-700 rounded-md text-sm">
+              📊 Progress service unavailable. Analytics disabled.
+            </div>
+          )}
+          
+          {/* SRS Status */}
+          {reviewServiceConnected && (
+            <div className="p-2 bg-green-50 border border-green-200 text-green-700 rounded-md text-xs">
+              🧠 SRS Mode: {currentStudyCard.isDue ? 'Review Card' : 'New Card'} 
+              {currentStudyCard.dueCard && ` (${currentStudyCard.dueCard.overdueDays} days overdue)`}
             </div>
           )}
         </div>
@@ -333,7 +537,7 @@ const FlashcardSession: React.FC = () => {
         {showModeSelector && (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
             <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full relative z-50">
-              <h3 className="text-xl font-bold mb-4">Which way would you like to study?</h3>
+              <h3 className="text-xl font-bold mb-4">Study Options</h3>
               <div className="space-y-3">
                 <button
                   onClick={() => {
@@ -357,6 +561,19 @@ const FlashcardSession: React.FC = () => {
                 >
                   English → Chinese
                 </button>
+                <hr />
+                <button
+                  onClick={() => {
+                    setUseSRS(!useSRS);
+                    setShowModeSelector(false);
+                    window.location.reload(); // Reload to apply SRS setting
+                  }}
+                  className={`w-full text-left p-3 border rounded-md hover:bg-gray-100 ${
+                    useSRS ? 'bg-blue-100 border-blue-400' : 'bg-gray-100'
+                  }`}
+                >
+                  🧠 SRS Mode: {useSRS ? 'ON' : 'OFF'}
+                </button>
               </div>
             </div>
             <div 
@@ -366,18 +583,17 @@ const FlashcardSession: React.FC = () => {
           </div>
         )}
         
-        {/* Top controls and stats */}
+        {/* Top controls */}
         <div className="mb-4 flex justify-between items-center">
           <button 
             onClick={() => setShowModeSelector(true)}
             className="text-sm text-primary hover:text-blue-700 flex items-center"
           >
-            <span className="mr-1">↻</span>
-            Switch to {studyMode === 'ChineseToEnglish' ? 'English → Chinese' : 'Chinese → English'} Mode
+            <span className="mr-1">⚙️</span>
+            Settings
           </button>
           
           <div className="flex items-center space-x-2">
-            {/* Audio preload toggle */}
             {audioServiceConnected && (
               <button
                 onClick={() => setPreloadEnabled(!preloadEnabled)}
@@ -392,8 +608,7 @@ const FlashcardSession: React.FC = () => {
               </button>
             )}
             
-            {/* Session stats */}
-            {reviewServiceConnected && sessionStats.cardsReviewed > 0 && (
+            {sessionStats.cardsReviewed > 0 && (
               <div className="text-xs text-gray-600">
                 {sessionStats.cardsReviewed}/{sessionStats.totalCards} | {Math.round((sessionStats.correctCount / sessionStats.cardsReviewed) * 100)}%
               </div>
@@ -403,7 +618,10 @@ const FlashcardSession: React.FC = () => {
         
         {/* Progress indicator */}
         <div className="mb-4 flex justify-between items-center text-sm text-gray-600">
-          <span>Card {currentIndex + 1} of {characters.length}</span>
+          <span>
+            Card {currentIndex + 1} of {studyCards.length}
+            {useSRS && ` • ${sessionStats.newCardsStudied} new, ${sessionStats.reviewCardsStudied} review`}
+          </span>
           
           {isLastCard && (
             <button
@@ -415,18 +633,18 @@ const FlashcardSession: React.FC = () => {
           )}
         </div>
         
-        {/* Main flashcard component with audio integration */}
+        {/* Main flashcard */}
         <Flashcard
-          cardId={cardId}
+          cardId={currentStudyCard.cardId}
           front={cardContent.front}
           back={cardContent.back}
           onEndSession={handleEndSession}
           onPrevious={history.length > 0 ? handlePrevious : undefined}
           onNext={!isLastCard ? handleNext : undefined}
           onCardGraded={reviewServiceConnected ? handleCardGraded : undefined}
-          initialGradingState={gradedCards.get(cardId)}
+          initialGradingState={gradedCards.get(currentStudyCard.cardId)}
           characterSet={characterSet}
-          currentCharacter={currentChar}
+          currentCharacter={currentStudyCard.character}
         />
         
         {/* Complete session button for last card */}
